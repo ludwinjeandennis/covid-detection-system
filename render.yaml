@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: covid-detection-system
+    env: python
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+      - key: ON_RENDER
+        value: true
+    plan: free
+    autoDeploy: true
+    disk:
+      name: models
+      mountPath: /tmp/models
+      sizeGB: 2
