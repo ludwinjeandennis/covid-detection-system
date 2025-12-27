@@ -4,15 +4,24 @@ services:
     env: python
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+      pip install --no-cache-dir -r requirements.txt
+      echo "✅ Instalación optimizada completada"
+    startCommand: |
+      export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+      export OMP_NUM_THREADS=1
+      export MKL_NUM_THREADS=1
+      python -c "import torch; torch.set_num_threads(1)"
+      streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --global.developmentMode false
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.13
-      - key: ON_RENDER
-        value: true
+        value: 3.9.0
+      - key: PYTORCH_CUDA_ALLOC_CONF
+        value: max_split_size_mb:128
+      - key: OMP_NUM_THREADS
+        value: "1"
     plan: free
     autoDeploy: true
+    healthCheckPath: /health
     disk:
       name: models
       mountPath: /tmp/models

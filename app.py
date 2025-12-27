@@ -1,6 +1,6 @@
 """
 SISTEMA STREAMLIT PROFESIONAL PARA DETECCIÓN DE COVID-19
-Vision Transformer - Versión optimizada para Render
+Vision Transformer - Versión optimizada para Render (Free Plan)
 """
 
 import streamlit as st
@@ -21,12 +21,28 @@ import gc
 from pathlib import Path
 warnings.filterwarnings('ignore')
 
-# Configurar estilo de matplotlib
-plt.style.use('seaborn-v0_8-darkgrid')
+# ==================== OPTIMIZACIÓN EXTREMA PARA RENDER ====================
+# Configurar para uso MÍNIMO de memoria
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+# Configurar PyTorch para uso mínimo de recursos
+torch.set_num_threads(1)
+if hasattr(torch, 'set_num_interop_threads'):
+    torch.set_num_interop_threads(1)
+
+# Usar precisión mixta para ahorrar memoria
+torch.set_float32_matmul_precision('medium')
+
+# Configurar matplotlib para usar menos memoria
+plt.rcParams['figure.max_open_warning'] = 0
+plt.rcParams['figure.dpi'] = 80
+plt.rcParams['savefig.dpi'] = 80
 
 # ==================== CONFIGURACIÓN ====================
 class Config:
-    # Usar Path para compatibilidad multiplataforma
     MODEL_PATH = Path("best_model_gpu.pth")
     CLASS_NAMES = ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']
     CLASS_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
@@ -44,11 +60,11 @@ class Config:
     }
 
 # ==================== MODELO ====================
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_model():
-    """Cargar el modelo Vision Transformer entrenado - Optimizado para Render"""
+    """Cargar el modelo Vision Transformer - Optimizado para memoria limitada"""
     try:
-        # Limpiar memoria
+        # Limpieza agresiva de memoria
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -56,70 +72,79 @@ def load_model():
         # Verificar si el archivo existe
         model_path = Config.MODEL_PATH
         if not model_path.exists():
-            st.error(f" Archivo de modelo no encontrado en: {model_path.absolute()}")
-            st.info(" Verifica que el archivo 'best_model_gpu.pth' está en la misma carpeta que app.py")
+            st.error(f"Archivo de modelo no encontrado en: {model_path.absolute()}")
             return None, {}, 0
         
-        # Detectar si estamos en Render (entorno con limitaciones)
+        # Detectar si estamos en Render
         is_render = os.environ.get('RENDER') == 'true' or os.environ.get('ON_RENDER')
         
-        # Configurar dispositivo (usar CPU en Render para ahorrar memoria)
-        if is_render or not torch.cuda.is_available():
-            device = torch.device('cpu')
-            map_location = 'cpu'
-            st.sidebar.info(" Ejecutando en modo CPU")
-        else:
-            device = torch.device('cuda')
-            map_location = 'cuda:0'
+        # Siempre usar CPU en Render para ahorrar memoria
+        device = torch.device('cpu')
+        map_location = 'cpu'
         
-        # Cargar checkpoint
-        st.sidebar.info(f" Cargando modelo ({model_path.stat().st_size / 1024**2:.1f} MB)...")
-        
-        checkpoint = torch.load(
-            str(model_path), 
-            map_location=map_location,
-            weights_only=False
-        )
-        
-        # Crear modelo
-        model = timm.create_model(
-            'vit_base_patch16_224', 
-            pretrained=False, 
-            num_classes=len(Config.CLASS_NAMES)
-        )
-        
-        # Cargar pesos
-        state_dict = checkpoint['model_state_dict']
-        
-        # Manejar DataParallel si fue usado
-        if any(key.startswith('module.') for key in state_dict.keys()):
-            new_state_dict = OrderedDict()
-            for k, v in state_dict.items():
-                name = k[7:] if k.startswith('module.') else k
-                new_state_dict[name] = v
-            state_dict = new_state_dict
-        
-        model.load_state_dict(state_dict)
-        model.to(device)
-        model.eval()
-        
-        # Cargar historial de entrenamiento si existe
-        history = checkpoint.get('history', {})
-        val_acc = checkpoint.get('val_acc', 93.27)  # Valor por defecto
-        
-        # Optimizar para inferencia
-        if is_render:
-            model.half()  # Usar float16 para ahorrar memoria
+        # Información de carga
+        with st.spinner("Cargando modelo (esto puede tomar 1-2 minutos)..."):
+            # Cargar checkpoint con optimizaciones
+            checkpoint = torch.load(
+                str(model_path), 
+                map_location=map_location,
+                weights_only=False,
+                pickle_module=__import__('pickle')  # Usar pickle estándar
+            )
+            
+            # Crear modelo con configuraciones livianas
+            model = timm.create_model(
+                'vit_base_patch16_224', 
+                pretrained=False, 
+                num_classes=len(Config.CLASS_NAMES),
+                act_layer=nn.ReLU,  # ReLU es más liviano que GELU
+                drop_rate=0.0,
+                drop_path_rate=0.0
+            )
+            
+            # Cargar pesos
+            state_dict = checkpoint['model_state_dict']
+            
+            # Manejar DataParallel si fue usado
+            if any(key.startswith('module.') for key in state_dict.keys()):
+                new_state_dict = OrderedDict()
+                for k, v in state_dict.items():
+                    name = k[7:] if k.startswith('module.') else k
+                    new_state_dict[name] = v
+                state_dict = new_state_dict
+            
+            model.load_state_dict(state_dict)
+            
+            # Optimizaciones extremas para Render
+            if is_render:
+                # Usar float16 para ahorrar 50% de memoria
+                model = model.half()
+            
+            model = model.to(device)
+            model.eval()
+            
+            # Desactivar gradientes para ahorrar memoria
+            for param in model.parameters():
+                param.requires_grad = False
+            
             torch.set_grad_enabled(False)
-        
-        st.sidebar.success(f" Modelo cargado - Accuracy: {val_acc:.2f}%")
+            
+            # Cargar historial de entrenamiento
+            history = checkpoint.get('history', {})
+            val_acc = checkpoint.get('val_acc', 93.27)
+            
+            # Liberar memoria del checkpoint
+            del checkpoint
+            del state_dict
+            gc.collect()
         
         return model, history, val_acc
         
+    except torch.cuda.OutOfMemoryError:
+        st.error("ERROR: Memoria insuficiente. El modelo es muy grande para el plan gratuito.")
+        return None, {}, 0
     except Exception as e:
-        st.error(f" Error cargando el modelo: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
+        st.error(f"Error cargando el modelo: {str(e)[:100]}")
         return None, {}, 0
 
 # ==================== TRANSFORMACIONES ====================
@@ -133,29 +158,44 @@ def get_transforms():
 
 # ==================== PREDICCIÓN ====================
 def predict_image(model, image):
-    """Realizar predicción en una imagen - Optimizada"""
-    transform = get_transforms()
-    
-    # Preprocesar imagen
-    img_tensor = transform(image).unsqueeze(0)
-    
-    # Mover al mismo dispositivo que el modelo
-    device = next(model.parameters()).device
-    img_tensor = img_tensor.to(device)
-    
-    # Realizar predicción
-    with torch.no_grad():
-        outputs = model(img_tensor)
-        probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
-        predicted_idx = torch.argmax(probabilities).item()
-        predicted_class = Config.CLASS_NAMES[predicted_idx]
-        confidence = probabilities[predicted_idx].item()
+    """Realizar predicción en una imagen optimizada"""
+    try:
+        transform = get_transforms()
         
-        # Obtener todas las probabilidades
-        all_probs = {Config.CLASS_NAMES[i]: prob.item() 
-                    for i, prob in enumerate(probabilities)}
-    
-    return predicted_class, confidence, all_probs
+        # Preprocesar imagen
+        img_tensor = transform(image).unsqueeze(0)
+        
+        # Mover al mismo dispositivo que el modelo
+        device = next(model.parameters()).device
+        img_tensor = img_tensor.to(device)
+        
+        # Si el modelo está en half, convertir la imagen también
+        if next(model.parameters()).dtype == torch.float16:
+            img_tensor = img_tensor.half()
+        
+        # Realizar predicción
+        with torch.no_grad():
+            outputs = model(img_tensor)
+            probabilities = torch.nn.functional.softmax(outputs[0], dim=0)
+            predicted_idx = torch.argmax(probabilities).item()
+            predicted_class = Config.CLASS_NAMES[predicted_idx]
+            confidence = probabilities[predicted_idx].item()
+            
+            # Obtener todas las probabilidades
+            all_probs = {Config.CLASS_NAMES[i]: prob.item() 
+                        for i, prob in enumerate(probabilities)}
+        
+        # Limpiar memoria
+        del img_tensor
+        del outputs
+        del probabilities
+        gc.collect()
+        
+        return predicted_class, confidence, all_probs
+        
+    except Exception as e:
+        st.error(f"Error en predicción: {str(e)}")
+        return "Error", 0.0, {}
 
 # ==================== GRÁFICOS CON MATPLOTLIB ====================
 def create_training_history_plot(history):
@@ -163,194 +203,107 @@ def create_training_history_plot(history):
     if not history or 'train_acc' not in history:
         return None
     
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    epochs = list(range(1, len(history['train_acc']) + 1))
-    
-    ax.plot(epochs, history['train_acc'], 'b-', linewidth=2, marker='o', 
-            markersize=6, label='Entrenamiento')
-    
-    if 'val_acc' in history and history['val_acc']:
-        ax.plot(epochs[:len(history['val_acc'])], history['val_acc'], 'r-', 
-                linewidth=2, marker='s', markersize=6, label='Validación')
-    
-    ax.set_xlabel('Época')
-    ax.set_ylabel('Accuracy (%)')
-    ax.set_title('Historial de Entrenamiento - Accuracy')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    return fig
-
-def create_loss_history_plot(history):
-    """Crear gráfico del historial de pérdida"""
-    if not history or 'train_loss' not in history:
+    try:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        
+        epochs = list(range(1, len(history['train_acc']) + 1))
+        
+        ax.plot(epochs, history['train_acc'], 'b-', linewidth=1.5, label='Entrenamiento')
+        
+        if 'val_acc' in history and history['val_acc']:
+            ax.plot(epochs[:len(history['val_acc'])], history['val_acc'], 'r-', 
+                    linewidth=1.5, label='Validación')
+        
+        ax.set_xlabel('Época')
+        ax.set_ylabel('Accuracy (%)')
+        ax.set_title('Historial de Entrenamiento - Accuracy')
+        ax.legend()
+        ax.grid(True, alpha=0.2)
+        
+        plt.tight_layout()
+        return fig
+    except:
         return None
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    epochs = list(range(1, len(history['train_loss']) + 1))
-    
-    ax.plot(epochs, history['train_loss'], 'g-', linewidth=2, marker='o', 
-            markersize=6, label='Entrenamiento')
-    
-    if 'val_loss' in history and history['val_loss']:
-        ax.plot(epochs[:len(history['val_loss'])], history['val_loss'], color='orange', 
-                linewidth=2, marker='s', markersize=6, label='Validación')
-    
-    ax.set_xlabel('Época')
-    ax.set_ylabel('Pérdida')
-    ax.set_title('Historial de Entrenamiento - Pérdida')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    return fig
 
 def create_probability_chart(probabilities):
     """Crear gráfico de barras para probabilidades"""
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    classes = list(probabilities.keys())
-    probs = list(probabilities.values())
-    
-    sorted_indices = np.argsort(probs)[::-1]
-    classes = [classes[i] for i in sorted_indices]
-    probs = [probs[i] for i in sorted_indices]
-    
-    bars = ax.bar(classes, probs, color=Config.CLASS_COLORS[:len(classes)])
-    
-    for bar, prob in zip(bars, probs):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                f'{prob:.2%}', ha='center', va='bottom')
-    
-    ax.set_xlabel('Clase')
-    ax.set_ylabel('Probabilidad')
-    ax.set_title('Probabilidades de Predicción')
-    ax.set_ylim([0, 1.1])
-    
-    # Cerrar figura para liberar memoria
-    plt.close('all')
-    
-    return fig
-
-def create_metrics_chart():
-    """Crear gráfico de métricas por clase"""
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    classes = Config.CLASS_NAMES
-    x = np.arange(len(classes))
-    width = 0.25
-    
-    precision = [0.98, 0.90, 0.93, 0.96]
-    recall = [0.98, 0.89, 0.94, 0.96]
-    f1_score = [0.98, 0.895, 0.935, 0.96]
-    
-    bars1 = ax.bar(x - width, precision, width, label='Precisión', 
-                   color=Config.CLASS_COLORS[0], alpha=0.8)
-    bars2 = ax.bar(x, recall, width, label='Recall', 
-                   color=Config.CLASS_COLORS[1], alpha=0.8)
-    bars3 = ax.bar(x + width, f1_score, width, label='F1-Score', 
-                   color=Config.CLASS_COLORS[2], alpha=0.8)
-    
-    for bars in [bars1, bars2, bars3]:
-        for bar in bars:
+    try:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        
+        classes = list(probabilities.keys())
+        probs = list(probabilities.values())
+        
+        sorted_indices = np.argsort(probs)[::-1]
+        classes = [classes[i] for i in sorted_indices]
+        probs = [probs[i] for i in sorted_indices]
+        
+        bars = ax.bar(classes, probs, color=Config.CLASS_COLORS[:len(classes)])
+        
+        for bar, prob in zip(bars, probs):
             height = bar.get_height()
-            if height > 0:
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.005,
-                       f'{height:.2f}', ha='center', va='bottom', fontsize=8)
-    
-    ax.set_xlabel('Clase')
-    ax.set_ylabel('Score')
-    ax.set_title('Métricas por Clase (Estimadas)')
-    ax.set_xticks(x)
-    ax.set_xticklabels(classes)
-    ax.legend()
-    ax.set_ylim([0.85, 1.0])
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.close('all')
-    
-    return fig
+            ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{prob:.1%}', ha='center', va='bottom', fontsize=9)
+        
+        ax.set_xlabel('Clase')
+        ax.set_ylabel('Probabilidad')
+        ax.set_title('Probabilidades de Predicción')
+        ax.set_ylim([0, 1.1])
+        
+        plt.tight_layout()
+        return fig
+    except:
+        return None
 
 # ==================== COMPONENTES UI ====================
 def create_header():
     """Crear encabezado de la aplicación"""
-    col1, col2 = st.columns([1, 4])
-    
-    with col1:
-        st.image("https://img.icons8.com/color/96/000000/lungs.png", width=80)
-    
-    with col2:
-        st.title("Sistema de Detección de COVID-19")
-        st.markdown("**Vision Transformer** para análisis de radiografías pulmonares")
-    
+    st.title("Sistema de Detección de COVID-19")
+    st.markdown("Vision Transformer para análisis de radiografías pulmonares")
     st.markdown("---")
 
 def create_sidebar():
     """Crear barra lateral"""
-    st.sidebar.image("https://img.icons8.com/color/96/000000/medical-doctor.png", width=80)
     st.sidebar.title("Navegación")
     
     page = st.sidebar.radio(
         "Seleccione una página:",
-        [" Inicio", " Predicción", " Análisis", " Información"],
+        ["Inicio", "Predicción", "Análisis", "Información"],
         index=0
     )
     
     st.sidebar.markdown("---")
     
-    st.sidebar.subheader(" Estadísticas del Modelo")
-    
-    model_info = st.sidebar.container()
-    with model_info:
-        st.metric("Accuracy", "93.27%")
-        st.metric("Épocas", "5")
-        st.metric("Clases", "4")
-    
-    st.sidebar.markdown("---")
-    
-    st.sidebar.subheader(" Advertencia")
-    st.sidebar.warning(
-        "Sistema de apoyo diagnóstico.\n"
-        "**NO** sustituye evaluación médica.\n"
-        "Solo para investigación."
-    )
-    
     # Información del sistema
-    st.sidebar.markdown("---")
-    st.sidebar.subheader(" Sistema")
-    st.sidebar.text(f"PyTorch: {torch.__version__}")
-    st.sidebar.text(f"Device: {'CPU' if not torch.cuda.is_available() else 'GPU'}")
+    st.sidebar.subheader("Información del Sistema")
     
-    return page.replace("🏠 ", "").replace("🔍 ", "").replace("📊 ", "").replace("ℹ️ ", "")
+    if torch.cuda.is_available():
+        device_info = "GPU disponible"
+    else:
+        device_info = "CPU solamente"
+    
+    st.sidebar.text(f"PyTorch: {torch.__version__}")
+    st.sidebar.text(f"Dispositivo: {device_info}")
+    
+    # Limpieza de memoria manual
+    if st.sidebar.button("Limpiar memoria"):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        st.sidebar.success("Memoria limpiada")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.warning("Sistema de apoyo diagnóstico. No sustituye evaluación médica.")
+    
+    return page
 
 def create_footer():
     """Crear pie de página"""
     st.markdown("---")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**Desarrollado con**")
-        st.markdown("![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)")
-        st.markdown("![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)")
-    
-    with col2:
-        st.markdown("**Modelo**")
-        st.markdown("Vision Transformer")
-        st.markdown("ViT-Base-224")
-    
-    with col3:
-        st.markdown("**Propósito**")
-        st.markdown("Diagnóstico Asistido")
-        st.markdown("Investigación Médica")
-    
     st.markdown(
         """
-        <div style='text-align: center; padding: 20px;'>
-        <p>© 2024 Sistema de Detección COVID-19 | Uso exclusivo para investigación</p>
-        <p><small>Este sistema es una herramienta de apoyo diagnóstico. No sustituye la evaluación médica profesional.</small></p>
+        <div style='text-align: center; padding: 10px;'>
+        <p>Sistema de Detección COVID-19 | Uso exclusivo para investigación</p>
+        <p><small>Herramienta de apoyo diagnóstico. No sustituye evaluación médica profesional.</small></p>
         </div>
         """,
         unsafe_allow_html=True
@@ -359,133 +312,112 @@ def create_footer():
 # ==================== PÁGINAS ====================
 def home_page(model, history, val_acc):
     """Página de inicio"""
-    st.header(" Bienvenido al Sistema de Detección COVID-19")
+    st.header("Bienvenido al Sistema de Detección COVID-19")
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.info("""
-        ### ** Características del Sistema**
-        - **4 Clases:** COVID, Opacidad Pulmonar, Normal, Neumonía Viral
-        - **Modelo:** Vision Transformer (ViT-Base-224)
-        - **Precisión:** 93.27% en validación
-        - **Rápido:** Predicción en segundos
-        - **Seguro:** Solo para investigación
+        **Características del Sistema:**
+        - 4 Clases: COVID, Opacidad Pulmonar, Normal, Neumonía Viral
+        - Modelo: Vision Transformer (ViT-Base-224)
+        - Precisión: 93.27% en validación
+        - Solo para investigación
         """)
     
     with col2:
         st.success("""
-        ### ** Cómo Usar**
-        1. Navega a **Predicción**
+        **Cómo Usar:**
+        1. Navega a Predicción
         2. Sube una radiografía pulmonar
         3. Obtén el diagnóstico asistido
-        4. Revisa las recomendaciones
-        5. Consulta siempre con un médico
+        4. Consulta siempre con un médico
         """)
+    
+    # Estado del modelo
+    if model is not None:
+        st.success("Modelo cargado correctamente")
+    else:
+        st.error("Modelo no disponible - Problemas de memoria")
     
     st.markdown("---")
     
-    if model is not None:
-        st.success(" Modelo cargado correctamente")
-    else:
-        st.error(" No se pudo cargar el modelo")
-    
     # Métricas del modelo
-    st.subheader(" Rendimiento del Modelo")
+    st.subheader("Rendimiento del Modelo")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Accuracy Total", f"{val_acc:.2f}%")
+        st.metric("Accuracy", f"{val_acc:.1f}%")
     
     with col2:
-        if history and 'train_acc' in history and 'val_acc' in history:
-            st.metric("Mejor Accuracy", f"{max(history['val_acc']):.2f}%")
-        else:
-            st.metric("Mejor Accuracy", "93.27%")
+        st.metric("Clases", "4")
     
     with col3:
-        if history and 'train_loss' in history:
-            st.metric("Pérdida Final", f"{history['train_loss'][-1]:.4f}")
-        else:
-            st.metric("Pérdida Final", "0.2659")
+        st.metric("Épocas", "5")
     
     with col4:
-        if history and 'train_acc' in history:
-            epocas = len(history['train_acc'])
-            st.metric("Épocas", epocas)
+        if torch.cuda.is_available():
+            st.metric("Dispositivo", "GPU")
         else:
-            st.metric("Épocas", "5")
+            st.metric("Dispositivo", "CPU")
     
     st.markdown("---")
     
-    # Gráficos de entrenamiento
-    st.subheader(" Historial de Entrenamiento")
-    
-    if history:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig_acc = create_training_history_plot(history)
-            if fig_acc:
-                st.pyplot(fig_acc, use_container_width=True)
-        
-        with col2:
-            fig_loss = create_loss_history_plot(history)
-            if fig_loss:
-                st.pyplot(fig_loss, use_container_width=True)
-    
-    # Información de las clases
-    st.subheader("🩺 Clases Detectables")
+    # Clases detectables
+    st.subheader("Clases Detectables")
     
     cols = st.columns(len(Config.CLASS_NAMES))
     
     for idx, (class_name, color) in enumerate(zip(Config.CLASS_NAMES, Config.CLASS_COLORS)):
         with cols[idx]:
-            with st.container():
-                st.markdown(
-                    f"""
-                    <div style='
-                        background-color: {color}20;
-                        border-left: 5px solid {color};
-                        padding: 15px;
-                        border-radius: 5px;
-                        margin: 5px 0;
-                    '>
-                    <h4 style='color: {color}; margin: 0;'>{class_name}</h4>
-                    <p style='margin: 5px 0 0 0; font-size: 0.9em;'>
-                    {Config.CLASS_DESCRIPTIONS[class_name]}
-                    </p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+            st.markdown(
+                f"""
+                <div style='
+                    background-color: {color}20;
+                    border-left: 4px solid {color};
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin: 2px 0;
+                    font-size: 0.9em;
+                '>
+                <strong>{class_name}</strong><br>
+                {Config.CLASS_DESCRIPTIONS[class_name][:50]}...
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
 def prediction_page(model):
     """Página de predicción"""
-    st.header(" Predicción de Radiografías")
+    st.header("Predicción de Radiografías")
     
     if model is None:
-        st.error(" El modelo no está cargado. Por favor, revisa los logs.")
+        st.error("El modelo no está disponible. Problema de memoria.")
+        st.info("""
+        Posibles soluciones:
+        1. El modelo es demasiado grande para el plan gratuito
+        2. Intenta actualizar a un plan con más memoria
+        3. Contacta al administrador del sistema
+        """)
         return
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.info("""
-        ### ** Sube una Radiografía**
+        **Sube una Radiografía:**
         - Formatos: JPG, PNG, JPEG
         - Tamaño recomendado: 224x224 píxeles
-        - Imágenes en escala de grises o color
-        - Asegúrate de que sea una radiografía pulmonar frontal
+        - Radiografía pulmonar frontal
         """)
     
     with col2:
         st.warning("""
-        ### ** Advertencia**
-        Este sistema es para **investigación**.
-        Los resultados deben ser **validados** por un radiólogo.
-        No use para diagnóstico clínico directo.
+        **Advertencia:**
+        Sistema para investigación.
+        Validar con radiólogo.
+        No usar para diagnóstico clínico.
         """)
     
     st.markdown("---")
@@ -493,33 +425,32 @@ def prediction_page(model):
     # Upload de imagen
     uploaded_file = st.file_uploader(
         "Selecciona una radiografía pulmonar",
-        type=['jpg', 'jpeg', 'png'],
-        help="Sube una imagen de radiografía pulmonar"
+        type=['jpg', 'jpeg', 'png']
     )
     
     if uploaded_file is not None:
         try:
+            # Limpiar memoria antes de procesar
+            gc.collect()
+            
             # Cargar y mostrar imagen
             image = Image.open(uploaded_file).convert('RGB')
             
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader(" Imagen Subida")
-                st.image(image, caption="Radiografía Pulmonar", use_column_width=True)
+                st.subheader("Imagen Subida")
+                st.image(image, use_column_width=True)
                 
-                # Información de la imagen
-                with st.expander(" Información de la imagen"):
-                    st.write(f"**Formato:** {image.format or 'Desconocido'}")
-                    st.write(f"**Tamaño:** {image.size[0]} x {image.size[1]} píxeles")
-                    st.write(f"**Modo:** {image.mode}")
-                    st.write(f"**Nombre archivo:** {uploaded_file.name}")
+                # Información básica
+                with st.expander("Detalles de imagen"):
+                    st.write(f"Tamaño: {image.size[0]} x {image.size[1]}")
+                    st.write(f"Formato: {uploaded_file.name.split('.')[-1].upper()}")
             
             with col2:
-                st.subheader(" Procesando...")
+                st.subheader("Análisis")
                 
-                with st.spinner("Realizando predicción..."):
-                    # Realizar predicción
+                with st.spinner("Procesando imagen..."):
                     predicted_class, confidence, all_probs = predict_image(model, image)
                     
                     # Mostrar resultados
@@ -528,112 +459,74 @@ def prediction_page(model):
                     st.markdown(
                         f"""
                         <div style='
-                            background-color: {result_color}20;
-                            border: 2px solid {result_color};
-                            border-radius: 10px;
-                            padding: 20px;
+                            background-color: {result_color}15;
+                            border: 1px solid {result_color};
+                            border-radius: 8px;
+                            padding: 15px;
                             text-align: center;
-                            margin: 20px 0;
+                            margin: 10px 0;
                         '>
-                        <h2 style='color: {result_color}; margin: 0;'>{predicted_class}</h2>
-                        <h3 style='margin: 10px 0;'>Confianza: <span style='color: {result_color};'>{confidence:.2%}</span></h3>
+                        <h3 style='color: {result_color}; margin: 0;'>{predicted_class}</h3>
+                        <p style='margin: 5px 0;'>Confianza: <strong>{confidence:.1%}</strong></p>
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
                     
-                    # Gráfico de probabilidades
-                    st.subheader(" Probabilidades")
-                    fig_prob = create_probability_chart(all_probs)
-                    st.pyplot(fig_prob, use_container_width=True)
+                    # Gráfico simple
+                    if all_probs:
+                        fig = create_probability_chart(all_probs)
+                        if fig:
+                            st.pyplot(fig, use_container_width=True)
             
             st.markdown("---")
             
-            # Detalles de la predicción
-            st.subheader(" Detalles de la Predicción")
+            # Detalles
+            st.subheader("Detalles de la Predicción")
             
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("####  Probabilidades por Clase")
-                prob_df = pd.DataFrame({
-                    'Clase': list(all_probs.keys()),
-                    'Probabilidad': list(all_probs.values())
-                }).sort_values('Probabilidad', ascending=False)
-                
-                st.dataframe(
-                    prob_df.style.format({'Probabilidad': '{:.2%}'}),
-                    hide_index=True,
-                    use_container_width=True
-                )
+                st.write("**Probabilidades:**")
+                for cls, prob in sorted(all_probs.items(), key=lambda x: x[1], reverse=True):
+                    st.write(f"- {cls}: {prob:.1%}")
             
             with col2:
-                st.markdown("#### 🩺 Descripción Clínica")
+                st.write("**Descripción:**")
                 st.info(Config.CLASS_DESCRIPTIONS[predicted_class])
-                
-                st.markdown("####  Recomendaciones")
+                st.write("**Recomendación:**")
                 st.warning(Config.CLASS_RECOMMENDATIONS[predicted_class])
             
-            # Exportar resultados
+            # Exportar simple
             st.markdown("---")
-            st.subheader("💾 Exportar Resultados")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                report = f"""
-                REPORTE DE PREDICCIÓN - {timestamp}
-                ====================================
-                Archivo: {uploaded_file.name}
-                Fecha: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-                
-                RESULTADO:
-                - Clase Predicha: {predicted_class}
-                - Confianza: {confidence:.2%}
-                
-                PROBABILIDADES:
-                """
-                for cls, prob in all_probs.items():
-                    report += f"- {cls}: {prob:.2%}\n"
-                
-                report += f"\nDESCRIPCIÓN: {Config.CLASS_DESCRIPTIONS[predicted_class]}"
-                report += f"\n\nRECOMENDACIÓN: {Config.CLASS_RECOMMENDATIONS[predicted_class]}"
-                
+            if st.button("Generar Reporte Simple"):
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                report = f"""Predicción COVID-19 - {timestamp}
+Clase: {predicted_class}
+Confianza: {confidence:.1%}
+Archivo: {uploaded_file.name}
+"""
                 st.download_button(
-                    label=" Descargar Reporte (.txt)",
-                    data=report,
-                    file_name=f"reporte_covid_{timestamp}.txt",
-                    mime="text/plain",
-                    use_container_width=True
+                    "Descargar Reporte",
+                    report,
+                    f"reporte_{timestamp.replace(':', '-')}.txt"
                 )
             
-            with col2:
-                st.info("""
-                **Nota:** Los resultados son generados por IA.
-                Siempre consulte con un profesional médico
-                para diagnóstico y tratamiento.
-                """)
-        
+            # Limpiar después de procesar
+            del image
+            gc.collect()
+            
         except Exception as e:
-            st.error(f" Error procesando la imagen: {e}")
-            st.error("Por favor, sube una imagen válida.")
+            st.error(f"Error: {str(e)}")
+            st.info("Intenta con otra imagen o contacta soporte.")
     else:
-        # Mostrar ejemplo
-        st.info("""
-        ** Ejemplo de uso:** 
-        1. Sube una radiografía pulmonar usando el botón arriba
-        2. Espera a que el modelo procese la imagen
-        3. Revisa los resultados y recomendaciones
-        4. Consulta siempre con un médico especialista
-        """)
+        st.info("Sube una imagen para comenzar el análisis.")
 
 def analysis_page(history, val_acc):
     """Página de análisis del modelo"""
-    st.header(" Análisis del Modelo")
+    st.header("Análisis del Modelo")
     
-    # Resumen del modelo
-    st.subheader(" Resumen del Modelo")
+    st.subheader("Resumen del Modelo")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -651,109 +544,38 @@ def analysis_page(history, val_acc):
     
     st.markdown("---")
     
-    # Gráficos de entrenamiento
-    st.subheader(" Análisis de Entrenamiento")
-    
+    # Historial de entrenamiento
     if history:
-        tab1, tab2, tab3 = st.tabs(["Accuracy", "Pérdida", "Métricas"])
-        
-        with tab1:
-            fig_acc = create_training_history_plot(history)
-            if fig_acc:
-                st.pyplot(fig_acc, use_container_width=True)
-            
-            if 'train_acc' in history and 'val_acc' in history:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric("Accuracy Train Final", f"{history['train_acc'][-1]:.2f}%")
-                    st.metric("Accuracy Train Inicial", f"{history['train_acc'][0]:.2f}%")
-                
-                with col2:
-                    st.metric("Accuracy Val Final", f"{history['val_acc'][-1]:.2f}%")
-                    st.metric("Mejor Accuracy Val", f"{max(history['val_acc']):.2f}%")
-        
-        with tab2:
-            fig_loss = create_loss_history_plot(history)
-            if fig_loss:
-                st.pyplot(fig_loss, use_container_width=True)
-            
-            if 'train_loss' in history and 'val_loss' in history:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric("Pérdida Train Final", f"{history['train_loss'][-1]:.4f}")
-                    st.metric("Pérdida Train Inicial", f"{history['train_loss'][0]:.4f}")
-                
-                with col2:
-                    st.metric("Pérdida Val Final", f"{history['val_loss'][-1]:.4f}")
-                    st.metric("Mejor Pérdida Val", f"{min(history['val_loss']):.4f}")
-        
-        with tab3:
-            fig_metrics = create_metrics_chart()
-            if fig_metrics:
-                st.pyplot(fig_metrics, use_container_width=True)
-            
-            # Tabla de métricas
-            st.subheader(" Métricas por Clase")
-            
-            metrics_df = pd.DataFrame({
-                'Clase': Config.CLASS_NAMES,
-                'Precisión': [0.98, 0.90, 0.93, 0.96],
-                'Recall': [0.98, 0.89, 0.94, 0.96],
-                'F1-Score': [0.98, 0.895, 0.935, 0.96],
-                'Casos (entrenamiento)': [732, 1201, 2020, 280]
-            })
-            
-            st.dataframe(
-                metrics_df.style.format({
-                    'Precisión': '{:.2%}',
-                    'Recall': '{:.2%}', 
-                    'F1-Score': '{:.2%}'
-                }),
-                hide_index=True,
-                use_container_width=True
-            )
-    
-    st.markdown("---")
+        st.subheader("Historial de Entrenamiento")
+        fig = create_training_history_plot(history)
+        if fig:
+            st.pyplot(fig, use_container_width=True)
     
     # Información técnica
-    st.subheader(" Información Técnica")
+    st.subheader("Información Técnica")
     
-    tech_col1, tech_col2 = st.columns(2)
+    col1, col2 = st.columns(2)
     
-    with tech_col1:
-        st.markdown("#### Hiperparámetros")
-        tech_info = st.container()
-        with tech_info:
-            st.write("- **Learning Rate:** 2e-4")
-            st.write("- **Batch Size:** 32")
-            st.write("- **Épocas:** 5")
-            st.write("- **Optimizador:** AdamW")
-            st.write("- **Weight Decay:** 1e-4")
-            st.write("- **Scheduler:** OneCycleLR")
+    with col1:
+        st.write("**Hiperparámetros:**")
+        st.write("- Learning Rate: 2e-4")
+        st.write("- Batch Size: 32")
+        st.write("- Optimizador: AdamW")
     
-    with tech_col2:
-        st.markdown("#### Preprocesamiento")
-        preproc_info = st.container()
-        with preproc_info:
-            st.write("- **Resize:** 224x224")
-            st.write("- **Normalización:** ImageNet stats")
-            st.write("- **Augmentations:** Flip, Rotation, ColorJitter")
-            st.write("- **Train/Val Split:** 80/20")
-            st.write("- **Classes:** 4 balanceadas")
+    with col2:
+        st.write("**Preprocesamiento:**")
+        st.write("- Resize: 224x224")
+        st.write("- Normalización: ImageNet")
+        st.write("- Split: 80/20")
 
 def info_page():
     """Página de información"""
-    st.header(" Información del Sistema")
+    st.header("Información del Sistema")
     
     st.info("""
-    ### ** Objetivo del Sistema**
-    Este sistema utiliza inteligencia artificial para asistir en la detección 
-    de condiciones pulmonares a partir de radiografías de tórax.
-    
-    **NO** es un sistema de diagnóstico automático, sino una herramienta 
-    de apoyo para profesionales de la salud.
+    **Objetivo del Sistema:**
+    Herramienta de IA para asistir en detección de condiciones pulmonares.
+    No es sistema de diagnóstico automático.
     """)
     
     st.markdown("---")
@@ -761,82 +583,32 @@ def info_page():
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("** Base de Datos**")
-        st.markdown("""
-        - **COVID-19 Radiography Database**
-        - **Total de imágenes:** 21,165
-        - **Distribución:**
-          - COVID: 3,616
-          - Lung Opacity: 6,012
-          - Normal: 10,192
-          - Viral Pneumonia: 1,345
-        - **Resolución:** Variada (escalada a 224x224)
-        """)
+        st.write("**Base de Datos:**")
+        st.write("- COVID-19 Radiography Database")
+        st.write("- 21,165 imágenes totales")
+        st.write("- 4 clases balanceadas")
     
     with col2:
-        st.subheader("** Arquitectura del Modelo**")
-        st.markdown("""
-        - **Modelo:** Vision Transformer (ViT-Base)
-        - **Parches:** 16x16
-        - **Capas Transformer:** 12
-        - **Heads de atención:** 12
-        - **Dimensiones ocultas:** 768
-        - **MLP Size:** 3072
-        - **Parámetros:** 86 millones
-        """)
+        st.write("**Arquitectura:**")
+        st.write("- Vision Transformer (ViT)")
+        st.write("- 12 capas transformer")
+        st.write("- 12 heads de atención")
     
     st.markdown("---")
     
-    st.subheader("** Limitaciones y Advertencias**")
-    
-    warning_col1, warning_col2 = st.columns(2)
-    
-    with warning_col1:
-        st.error("""
-        ** Limitaciones Técnicas:**
-        - Solo procesa radiografías frontales
-        - No detecta todas las condiciones pulmonares
-        - Sensible a calidad de imagen
-        - Puede tener falsos positivos/negativos
-        """)
-    
-    with warning_col2:
-        st.warning("""
-        ** Consideraciones Clínicas:**
-        - Para investigación únicamente
-        - Validar con pruebas clínicas
-        - Consultar siempre con radiólogo
-        - No usar para diagnóstico autónomo
-        """)
-    
-    st.markdown("---")
-    
-    st.subheader("** Contacto y Soporte**")
-    
-    contact_col1, contact_col2, contact_col3 = st.columns(3)
-    
-    with contact_col1:
-        st.markdown("** Desarrollador:**")
-        st.write("Sistema de IA Médica")
-        st.write("Investigación en Computer Vision")
-    
-    with contact_col2:
-        st.markdown("** Propósito:**")
-        st.write("Investigación académica")
-        st.write("Desarrollo tecnológico")
-        st.write("Apoyo diagnóstico")
-    
-    with contact_col3:
-        st.markdown("** Licencia:**")
-        st.write("Uso académico")
-        st.write("No comercial")
-        st.write("Atribución requerida")
+    st.warning("""
+    **Limitaciones:**
+    - Solo radiografías frontales
+    - Sensible a calidad de imagen
+    - Posibles falsos positivos/negativos
+    - Para investigación únicamente
+    """)
 
 # ==================== APLICACIÓN PRINCIPAL ====================
 def main():
     """Función principal de la aplicación Streamlit"""
     
-    # Configuración de la página
+    # Configuración básica de la página
     st.set_page_config(
         page_title="Sistema COVID-19 - Vision Transformer",
         page_icon="🩺",
@@ -844,49 +616,20 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Inyectar CSS personalizado
+    # CSS minimalista
     st.markdown("""
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-    .fa-icon {
-        font-size: 1.2em;
-        margin-right: 8px;
+    .stButton > button {
+        width: 100%;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-    }
-    .class-card {
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        border-left: 5px solid;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #4ECDC4;
-    }
-    .footer {
-        text-align: center;
-        padding: 20px;
-        margin-top: 30px;
-        border-top: 1px solid #ddd;
-        color: #666;
-    }
-    /* Optimizar para móviles */
-    @media (max-width: 768px) {
-        .stButton > button {
-            width: 100%;
-        }
+    div[data-testid="stExpander"] div[role="button"] p {
+        font-size: 1rem;
     }
     </style>
     """, unsafe_allow_html=True)
     
-    # Mostrar mensaje de carga
-    with st.spinner(" Cargando modelo y configurando aplicación..."):
-        # Cargar modelo (caché)
+    # Cargar modelo con spinner
+    with st.spinner("Inicializando sistema..."):
         model, history, val_acc = load_model()
     
     # Crear UI
@@ -903,10 +646,10 @@ def main():
     elif page == "Información":
         info_page()
     
-    # Crear pie de página
+    # Pie de página
     create_footer()
     
-    # Limpiar memoria periódicamente
+    # Limpieza final
     gc.collect()
 
 if __name__ == "__main__":

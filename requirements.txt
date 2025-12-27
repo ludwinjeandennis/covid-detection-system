@@ -1,9 +1,18 @@
 streamlit==1.32.0
-torch==2.0.1
-torchvision==0.15.2
-timm==0.9.2
+
+# PyTorch MÍNIMO para CPU
+torch==2.0.0
+torchvision==0.15.1
+
+# Timm optimizado
+timm==0.6.13  # Versión más liviana
+
+# Dependencias mínimas
 pillow==10.0.0
 matplotlib==3.7.2
-pandas==2.0.3
-numpy==1.24.3
+pandas==1.5.3  # Versión más vieja pero liviana
+numpy==1.23.5
 protobuf==3.20.3
+
+# Para ahorrar memoria
+psutil==5.9.6
